@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#07111b">
+    <meta name="description" content="CyberGuard security operations and cloud security center.">
+    <title>CyberGuard | Security Operations</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#mainContent">Skip to content</a>
+    <header class="mobile-header">
+        <a class="brand compact-brand" href="/" aria-label="CyberGuard home"><span class="brand-mark">C</span><span>CyberGuard</span></a>
+        <button class="icon-button menu-toggle" id="menuToggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar">
+            <span></span><span></span><span></span>
+        </button>
+    </header>
+    <div class="app-layout">
+        <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+        <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+            <a class="brand desktop-brand" href="/"><span class="brand-mark">C</span><span>CyberGuard<span class="brand-subtitle">SECURITY OPERATIONS</span></span></a>
+            <div class="nav-label">Workspace</div>
+            <nav class="primary-nav">
+                <button class="nav-item is-active" type="button" data-view-target="operations" aria-current="page"><span class="nav-index">01</span><span>Data operations</span></button>
+                <button class="nav-item" type="button" data-view-target="monitor"><span class="nav-index">02</span><span>Operations center</span></button>
+                <button class="nav-item" type="button" data-view-target="help"><span class="nav-index">03</span><span>Help</span></button>
+            </nav>
+            <div class="sidebar-bottom">
+                <span class="status-pulse" aria-hidden="true"></span>
+                <div><strong>Security engine active</strong><span>CyberGuard Intelligence Engine</span></div>
+            </div>
+            <a class="sidebar-link" href="/healthz">Platform v1.0.0 <span aria-hidden="true">↗</span></a>
+        </aside>
+
+        <main class="main-content" id="mainContent">
+            <div class="topline">
+                <div class="breadcrumb">SECURITY CONSOLE <span>/</span> <span id="breadcrumbCurrent">DATA OPERATIONS</span></div>
+                <div class="topline-status"><span class="status-pulse" aria-hidden="true"></span><span>API connection</span><strong id="apiStatus">Ready</strong></div>
+            </div>
+
+            <section class="view-panel" id="operationsView" data-view="operations">
+                <header class="page-heading">
+                    <div><p class="eyebrow">SECURE DATA WORKSPACE</p><h1>Data operations</h1><p class="heading-copy">Store protected credentials and test input defenses against common injection techniques.</p></div>
+                    <span class="classification"><span class="classification-dot"></span> AES-256-GCM</span>
+                </header>
+
+                <section class="access-strip" aria-labelledby="clientAccessHeading">
+                    <div class="access-icon" aria-hidden="true">C</div>
+                    <div class="access-copy"><h2 id="clientAccessHeading">Client capability</h2><p>Sent with each data operation and held only in this page.</p></div>
+                    <div class="access-control"><label class="sr-only" for="clientCapability">Client capability code</label><input id="clientCapability" type="password" autocomplete="off" placeholder="Enter client capability" required><button class="icon-button reveal-button" type="button" data-reveal="clientCapability" aria-label="Show client capability" title="Show capability">Show</button></div>
+                </section>
+
+                <div class="operation-grid">
+                    <section class="surface operation-surface" aria-labelledby="storeHeading">
+                        <div class="surface-heading"><div><span class="step-label">OPERATION 01</span><h2 id="storeHeading">Store a credential</h2></div><span class="surface-icon secure-icon" aria-hidden="true">+</span></div>
+                        <p class="surface-copy">Credential values are encrypted before they reach the database.</p>
+                        <form id="storeForm" class="form-stack">
+                            <label for="storeUsername">Username <span class="field-note">Required</span></label>
+                            <input id="storeUsername" name="username" type="text" maxlength="128" autocomplete="off" placeholder="e.g. alex.morgan" required>
+                            <label for="storeCredential">Sensitive credential <span class="field-note">Encrypted at rest</span></label>
+                            <input id="storeCredential" name="sensitive_credential" type="password" maxlength="4096" autocomplete="new-password" placeholder="Enter the value to protect" required>
+                            <button class="button button-primary" type="submit"><span>Encrypt and store</span><span aria-hidden="true">→</span></button>
+                        </form>
+                        <pre class="result-box" id="storeResult" aria-live="polite" hidden></pre>
+                    </section>
+
+                    <section class="surface operation-surface threat-surface" aria-labelledby="retrieveHeading">
+                        <div class="surface-heading"><div><span class="step-label warning-step">OPERATION 02</span><h2 id="retrieveHeading">Retrieve or test</h2></div><span class="surface-icon threat-icon" aria-hidden="true">!</span></div>
+                        <p class="surface-copy">Input is inspected before a parameterized lookup. Suspicious requests are blocked and recorded.</p>
+                        <form id="retrieveForm" class="form-stack">
+                            <label for="searchUsername">Username or test payload</label>
+                            <input id="searchUsername" name="username" type="text" maxlength="256" autocomplete="off" placeholder="Enter a username or SQL test string" required>
+                            <div class="test-hint"><span class="hint-mark" aria-hidden="true">i</span><span>Try a benign lookup first. Blocked probes are logged without storing their contents.</span></div>
+                            <button class="button button-dark" type="submit"><span>Inspect request</span><span aria-hidden="true">→</span></button>
+                        </form>
+                        <pre class="result-box" id="retrieveResult" aria-live="polite" hidden></pre>
+                    </section>
+                </div>
+                <footer class="page-footer"><span>All lookups use bound ORM parameters.</span><a href="#monitor" data-view-link="monitor">Review security activity <span aria-hidden="true">→</span></a></footer>
+            </section>
+
+            <section class="view-panel" id="helpView" data-view="help" hidden>
+                <header class="page-heading">
+                    <div><p class="eyebrow">BEGINNER GUIDE</p><h1>How this system works</h1><p class="heading-copy">A simple walkthrough for anyone using a secure search and security system for the first time.</p></div>
+                    <span class="classification"><span class="classification-dot"></span> Beginner friendly</span>
+                </header>
+
+                <div class="help-grid">
+                    <section class="surface help-surface" aria-labelledby="helpOverview">
+                        <div class="surface-heading"><div><span class="step-label">FIRST-TIME GUIDE</span><h2 id="helpOverview">Security search explained</h2></div></div>
+                        <div id="helpContent" class="help-content"></div>
+                    </section>
+                    <aside class="surface help-side" aria-labelledby="quickTaskHeading">
+                        <div class="surface-heading"><div><span class="step-label">QUICK START</span><h2 id="quickTaskHeading">What to do next</h2></div></div>
+                        <div class="help-tasks" id="helpTasks"></div>
+                    </aside>
+                </div>
+                <footer class="page-footer"><span>Tip: use a normal username like alice before testing any advanced SQL input.</span><a href="#operations" data-view-link="operations">Return to the workspace <span aria-hidden="true">→</span></a></footer>
+            </section>
+
+            <section class="view-panel" id="monitorView" data-view="monitor" hidden>
+                <header class="page-heading">
+                    <div><p class="eyebrow">CYBERGUARD INTELLIGENCE ENGINE</p><h1>Security operations</h1><p class="heading-copy">Live application telemetry, attack analysis, and cloud security posture.</p></div>
+                    <button class="button button-secondary refresh-button" id="refreshDashboard" type="button" disabled><span aria-hidden="true">↻</span> Refresh</button>
+                </header>
+
+                <section class="access-strip admin-access" aria-labelledby="adminAccessHeading" id="adminAccess">
+                    <div class="access-icon admin-access-icon" aria-hidden="true">CG</div>
+                    <div class="access-copy"><h2 id="adminAccessHeading">Administrator sign in</h2><p>Protected with Argon2id, authenticator MFA, and an HttpOnly session.</p></div>
+                    <form class="admin-login-form" id="adminForm">
+                        <label class="sr-only" for="adminUsername">Administrator username</label><input id="adminUsername" type="text" autocomplete="username" placeholder="Administrator username" required>
+                        <label class="sr-only" for="adminPassword">Administrator password</label><input id="adminPassword" type="password" autocomplete="current-password" placeholder="Administrator password" required>
+                        <label class="sr-only" for="adminTotp">Six-digit authenticator code</label><input id="adminTotp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit MFA code" required>
+                        <button class="button button-admin" type="submit">Sign in securely</button>
+                    </form>
+                </section>
+
+                <div id="dashboardContent" hidden>
+                    <div class="dashboard-toolbar"><p><span class="status-pulse" aria-hidden="true"></span><span id="dashboardStatus">Application telemetry</span></p><div class="toolbar-actions"><button class="button button-outline" id="exportLogs" type="button" title="Export security incident report">Export report <span aria-hidden="true">↓</span></button><button class="button button-outline" id="logoutAdmin" type="button" title="End administrator session">Sign out</button></div></div>
+                    <div class="stats-grid" aria-label="Security statistics">
+                        <article class="stat-card"><span class="stat-label">Requests monitored</span><strong class="stat-value" id="statRequests">0</strong><span class="stat-foot">Recorded by this service</span><span class="stat-accent accent-cyan"></span></article>
+                        <article class="stat-card"><span class="stat-label">SQL injection attempts</span><strong class="stat-value" id="statThreats">0</strong><span class="stat-foot">Detected and blocked</span><span class="stat-accent accent-coral"></span></article>
+                        <article class="stat-card"><span class="stat-label">Blocked requests</span><strong class="stat-value" id="statBlocked">0</strong><span class="stat-foot">Unauthorized or malicious</span><span class="stat-accent accent-purple"></span></article>
+                        <article class="stat-card"><span class="stat-label">Suspicious IP addresses</span><strong class="stat-value" id="statIps">0</strong><span class="stat-foot">Elevated activity sources</span><span class="stat-accent accent-blue"></span></article>
+                        <article class="stat-card"><span class="stat-label">Failed login attempts</span><strong class="stat-value" id="statFailed">0</strong><span class="stat-foot">Administrator authentication</span><span class="stat-accent accent-orange"></span></article>
+                        <article class="stat-card"><span class="stat-label">Open incidents</span><strong class="stat-value" id="statIncidents">0</strong><span class="stat-foot">Awaiting investigation</span><span class="stat-accent accent-green"></span></article>
+                    </div>
+
+                    <section class="surface cloud-center" aria-labelledby="cloudHeading">
+                        <div class="surface-heading table-heading"><div><span class="step-label">CLOUD SECURITY CENTER</span><h2 id="cloudHeading">Security posture</h2></div><div class="cloud-actions"><span class="integration-label">Provider integration: not connected</span><button class="button button-outline" id="rotateKeys" type="button" title="Re-encrypt protected records with the configured current key">Rotate encryption</button></div></div>
+                        <div class="cloud-check-grid" id="cloudChecks"></div>
+                    </section>
+
+                    <div class="monitor-grid">
+                        <section class="surface chart-surface" aria-labelledby="chartHeading">
+                            <div class="surface-heading chart-heading"><div><span class="step-label">EVENT HISTORY</span><h2 id="chartHeading">Recent security activity</h2></div><label class="select-wrap"><span class="sr-only">Chart range</span><select id="chartRange"><option value="7">7 days</option><option value="30">30 days</option></select></label></div>
+                            <div class="chart-wrap"><canvas id="activityChart" role="img" aria-label="Daily security event chart">Security event activity chart</canvas></div>
+                            <div class="chart-legend"><span><i class="legend-swatch threat-swatch"></i>Threats</span><span><i class="legend-swatch access-swatch"></i>Other events</span></div>
+                        </section>
+                        <section class="surface system-surface" aria-labelledby="systemHeading">
+                            <div class="surface-heading"><div><span class="step-label">SERVICE HEALTH</span><h2 id="systemHeading">System status</h2></div><span class="health-check" aria-hidden="true">✓</span></div>
+                            <div class="health-row"><span>API & database</span><strong id="systemStatus">Unknown</strong></div>
+                            <div class="health-row"><span>Credential encryption</span><strong id="encryptionStatus">Unknown</strong></div>
+                            <div class="health-row"><span>Administrator MFA</span><strong id="authStatus">Unknown</strong></div>
+                            <div class="health-row"><span>API security</span><strong id="apiSecurityStatus">Unknown</strong></div>
+                            <div class="health-row"><span>Records protected</span><strong id="protectedUsers">0</strong></div>
+                            <div class="health-row"><span>Database activity</span><strong id="databaseActivity">0 stored · 0 retrieved</strong></div>
+                        </section>
+                    </div>
+
+                    <div class="monitor-grid lower-grid">
+                        <section class="surface table-surface" aria-labelledby="eventsHeading">
+                            <div class="surface-heading table-heading"><div><span class="step-label">AUDIT TRAIL</span><h2 id="eventsHeading">Recent security events</h2></div><span class="table-count" id="eventCount">0 events</span></div>
+                            <div class="table-scroll"><table><thead><tr><th>Event</th><th>Result</th><th>Severity</th><th>Source</th><th>Time (UTC)</th></tr></thead><tbody id="eventsTable"><tr><td colspan="5" class="empty-cell">No events recorded yet.</td></tr></tbody></table></div>
+                        </section>
+                        <section class="surface ips-surface" aria-labelledby="ipsHeading">
+                            <div class="surface-heading table-heading"><div><span class="step-label">SOURCE ANALYSIS</span><h2 id="ipsHeading">Suspicious sources</h2></div></div>
+                            <div id="suspiciousIps" class="ip-list"><p class="empty-copy">No elevated activity recorded.</p></div>
+                        </section>
+                    </div>
+
+                    <section class="surface table-surface users-surface" aria-labelledby="usersHeading">
+                        <div class="surface-heading table-heading"><div><span class="step-label">PROTECTED RECORDS</span><h2 id="usersHeading">Credential index</h2></div><span class="table-count" id="userCount">0 records</span></div>
+                        <div class="table-scroll"><table><thead><tr><th>Record</th><th>Username</th><th>Stored value</th></tr></thead><tbody id="usersTable"><tr><td colspan="3" class="empty-cell">No records available.</td></tr></tbody></table></div>
+                    </section>
+
+                    <section class="surface table-surface investigation-surface" aria-labelledby="investigationHeading">
+                        <div class="surface-heading table-heading"><div><span class="step-label">THREAT INVESTIGATION CENTER</span><h2 id="investigationHeading">Security incidents</h2></div><span class="table-count" id="incidentCount">0 incidents</span></div>
+                        <div class="table-scroll"><table class="incident-table"><thead><tr><th>Incident</th><th>Risk</th><th>Source / time</th><th>Reason flagged</th><th>Investigation notes</th><th>State</th></tr></thead><tbody id="incidentTable"><tr><td colspan="6" class="empty-cell">No incidents recorded.</td></tr></tbody></table></div>
+                    </section>
+                </div>
+                <div class="monitor-placeholder" id="monitorPlaceholder"><span class="lock-mark" aria-hidden="true">CG</span><h2>Administrator session required</h2><p>Authenticate with your administrator account and authenticator code to access security operations.</p></div>
+                <footer class="page-footer"><span>Audit entries redact request contents and credentials.</span><a href="#operations" data-view-link="operations">Return to data operations <span aria-hidden="true">→</span></a></footer>
+            </section>
+        </main>
+    </div>
+</body>
+</html>
