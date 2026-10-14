@@ -53,11 +53,15 @@ ADMIN_SESSION_TTL = timedelta(hours=8)
 password_hasher = PasswordHasher()
 
 app = FastAPI(title="CodeAlpha Secure Data & SQL Injection Defense")
+SESSION_SECRET = os.getenv("SESSION_SECRET")
+if not SESSION_SECRET:
+    raise RuntimeError("SESSION_SECRET must be configured in production")
+
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.getenv("SESSION_SECRET", "local-development-secret-change-me"),
+    secret_key=SESSION_SECRET,
     same_site="lax",
-    https_only=False
+    https_only=True
 )
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")), name="static")
 
@@ -879,28 +883,28 @@ def _verify_google_id_token(id_token: str) -> dict:
 @app.get("/auth/google/login")
 async def google_login(request: Request, response: Response, db: Session = Depends(get_db)):
     oauth = _get_google_oauth_client()
-    state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-    db.add(GoogleOAuthState(state=state, nonce=nonce, expires_at=expires_at))
-    db.commit()
     redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "")
-    return await oauth.google.authorize_redirect(request, redirect_uri, state=state, nonce=nonce)
+
+    if not redirect_uri:
+        raise HTTPException(status_code=500, detail="Google redirect URI is not configured")
+
+    # Authlib generates state and stores it in the signed session.
+    return await oauth.google.authorize_redirect(
+        request,
+        redirect_uri,
+        nonce=nonce
+    )
 
 
 @app.get("/auth/google/callback")
 async def google_callback(request: Request, response: Response, db: Session = Depends(get_db)):
-    state = request.query_params.get("state", "")
-    code = request.query_params.get("code", "")
-    if not state or not code:
-        raise HTTPException(status_code=400, detail="Google callback missing required parameters")
-    oauth_state = db.query(GoogleOAuthState).filter_by(state=state).first()
-    if not oauth_state or (
-        oauth_state.expires_at.replace(tzinfo=timezone.utc)
-        if oauth_state.expires_at.tzinfo is None
-        else oauth_state.expires_at
-    ) <= datetime.now(timezone.utc):
-        raise HTTPException(status_code=401, detail="Google authentication state expired or invalid")
+    if not request.query_params.get("state") or not request.query_params.get("code"):
+        raise HTTPException(
+            status_code=400,
+            detail="Google callback missing required parameters"
+        )
+
     oauth = _get_google_oauth_client()
     try:
         token = await oauth.google.authorize_access_token(request)
