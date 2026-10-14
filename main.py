@@ -907,13 +907,12 @@ async def google_callback(request: Request, response: Response, db: Session = De
         id_token = token.get("id_token")
         claims = _verify_google_id_token(id_token)
     except Exception as error:
-        print(
-            f"GOOGLE OAUTH ERROR: {type(error).__name__}: {error}",
-            flush=True
-        )
+        import traceback
+        print("GOOGLE OAUTH CALLBACK FAILURE:", flush=True)
+        traceback.print_exc()
         raise HTTPException(
             status_code=401,
-            detail="Google authentication failed. Please start a new login."
+            detail=f"Google authentication failed: {type(error).__name__}"
         ) from error
 
     email = claims["email"].lower()
