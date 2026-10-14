@@ -195,7 +195,7 @@ def migrate_schema() -> None:
         "source_ip": "VARCHAR(64)",
         "pattern": "VARCHAR(255)",
         "incident_notes": "TEXT NOT NULL DEFAULT ''",
-        "resolved": "BOOLEAN NOT NULL DEFAULT 0",
+        "resolved": "BOOLEAN NOT NULL DEFAULT FALSE",
     }
     with engine.begin() as connection:
         for name, definition in additions.items():
@@ -210,22 +210,22 @@ def migrate_schema() -> None:
         for table_name, required_columns in {
             "users": [
                 ("session_id", "INTEGER"),
-                ("created_at", "DATETIME"),
+                ("created_at", "TIMESTAMP"),
                 ("username", "VARCHAR(128)"),
                 ("encrypted_credential", "TEXT"),
             ],
             "client_sessions": [
                 ("token_hash", "VARCHAR(64)"),
-                ("created_at", "DATETIME"),
-                ("expires_at", "DATETIME"),
-                ("last_seen_at", "DATETIME"),
+                ("created_at", "TIMESTAMP"),
+                ("expires_at", "TIMESTAMP"),
+                ("last_seen_at", "TIMESTAMP"),
                 ("user_agent", "VARCHAR(255)"),
             ],
             "google_oauth_state": [
                 ("state", "VARCHAR(128)"),
                 ("nonce", "VARCHAR(128)"),
-                ("expires_at", "DATETIME"),
-                ("created_at", "DATETIME"),
+                ("expires_at", "TIMESTAMP"),
+                ("created_at", "TIMESTAMP"),
             ],
         }.items():
             if not inspector.has_table(table_name):
