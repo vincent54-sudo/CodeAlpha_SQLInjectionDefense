@@ -26,43 +26,8 @@ import requests
 from argon2 import PasswordHasher
 from authlib.jose import jwt
 
-try:
-    from authlib.integrations.base_client import OAuthError
-    from authlib.integrations.starlette_client import OAuth
-except ImportError:
-    class OAuthError(Exception):
-        pass
-
-    class OAuth:
-        def __init__(self):
-            self._clients = {}
-
-        def register(self, name: str, **kwargs):
-            self._clients[name] = kwargs
-
-        def __getattr__(self, name: str):
-            if name not in self._clients:
-                raise AttributeError(name)
-            return _FallbackOAuthClient(self._clients[name])
-
-    class _FallbackOAuthClient:
-        def __init__(self, config):
-            self.config = config
-
-        def authorize_redirect(self, request: Request, redirect_uri: str, **kwargs):
-            params = {
-                "client_id": self.config["client_id"],
-                "redirect_uri": redirect_uri,
-                "response_type": "code",
-                "scope": self.config.get("client_kwargs", {}).get("scope", "openid email profile"),
-                "state": kwargs.get("state", ""),
-                "nonce": kwargs.get("nonce", ""),
-            }
-            url = f"{self.config['authorize_url']}?{urlencode(params)}"
-            return RedirectResponse(url=url)
-
-        def authorize_access_token(self, request: Request):
-            return {"id_token": request.query_params.get("id_token", "")}
+from authlib.integrations.base_client import OAuthError
+from authlib.integrations.starlette_client import OAuth
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
