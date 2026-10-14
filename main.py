@@ -802,35 +802,78 @@ def _get_google_oauth_client() -> OAuth:
 
 
 def _verify_google_id_token(id_token: str) -> dict:
+    import base64
+
     if not id_token:
         raise ValueError("Missing Google ID token")
-    unverified_header = jwt.get_unverified_header(id_token)
+
+    # Read the untrusted header only to select Google's signing key.
+    try:
+        encoded_header = id_token.split(".")[0]
+        padded_header = encoded_header + "=" * (-len(encoded_header) % 4)
+        unverified_header = json.loads(
+            base64.urlsafe_b64decode(padded_header).decode("utf-8")
+        )
+    except Exception as error:
+        raise ValueError("Invalid Google ID token header") from error
+
+    if unverified_header.get("alg") != "RS256":
+        raise ValueError("Unsupported Google ID token algorithm")
+
+    kid = unverified_header.get("kid")
+    if not kid:
+        raise ValueError("Google signing key ID missing")
+
     jwks_url = "https://www.googleapis.com/oauth2/v3/certs"
-    with urlopen(jwks_url) as response:
+    with urlopen(jwks_url, timeout=10) as response:
         jwks = json.load(response)
-    key_data = None
-    for key in jwks.get("keys", []):
-        if key.get("kid") == unverified_header.get("kid"):
-            key_data = key
-            break
+
+    key_data = next(
+        (key for key in jwks.get("keys", []) if key.get("kid") == kid),
+        None,
+    )
     if key_data is None:
         raise ValueError("Google signing key not found")
+
+    # Authlib verifies the token signature using Google's public key.
     claims = jwt.decode(id_token, key_data)
     claims.validate()
+
     client_id = os.getenv("GOOGLE_CLIENT_ID", "")
-    now = datetime.now(timezone.utc).timestamp()
-    if claims.get("iss") not in {"https://accounts.google.com", "accounts.google.com"}:
+    if not client_id:
+        raise ValueError("Google client ID is not configured")
+
+    if claims.get("iss") not in {
+        "https://accounts.google.com",
+        "accounts.google.com",
+    }:
         raise ValueError("Invalid Google issuer")
-    if claims.get("aud") != client_id:
+
+    audience = claims.get("aud")
+    if isinstance(audience, list):
+        if client_id not in audience:
+            raise ValueError("Invalid Google audience")
+        if len(audience) > 1 and claims.get("azp") != client_id:
+            raise ValueError("Invalid Google authorized party")
+    elif audience != client_id:
         raise ValueError("Invalid Google audience")
+
+    now = datetime.now(timezone.utc).timestamp()
     if claims.get("exp", 0) < now:
         raise ValueError("Expired Google ID token")
+
     if not claims.get("email_verified"):
         raise ValueError("Google email not verified")
+
     email = str(claims.get("email", "")).strip().lower()
     if not email:
         raise ValueError("Google email missing")
-    return {"email": email, "name": claims.get("name", email), "picture": claims.get("picture")}
+
+    return {
+        "email": email,
+        "name": claims.get("name", email),
+        "picture": claims.get("picture"),
+    }
 
 
 @app.get("/auth/google/login")
