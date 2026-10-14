@@ -877,7 +877,7 @@ async def google_login(request: Request, response: Response, db: Session = Depen
     db.add(GoogleOAuthState(state=state, nonce=nonce, expires_at=expires_at))
     db.commit()
     redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "")
-    return await oauth.google.authorize_redirect(request, redirect_uri, state=state, nonce=nonce)
+    return oauth.google.authorize_redirect(request, redirect_uri, state=state, nonce=nonce)
 
 
 @app.get("/auth/google/callback")
