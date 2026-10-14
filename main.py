@@ -236,6 +236,27 @@ def migrate_schema() -> None:
                     connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
 
 
+    # Make obsolete legacy columns optional on PostgreSQL.
+    # Current UserRecord fields remain unchanged.
+    if engine.dialect.name == "postgresql":
+        model_columns = set(UserRecord.__table__.columns.keys())
+        legacy_columns = [
+            column["name"]
+            for column in inspect(engine).get_columns("users")
+            if column["name"] not in model_columns
+            and column["name"] != "id"
+            and not column["nullable"]
+        ]
+
+        if legacy_columns:
+            with engine.begin() as connection:
+                for column_name in legacy_columns:
+                    quoted_name = connection.dialect.identifier_preparer.quote(column_name)
+                    connection.execute(
+                        text(f"ALTER TABLE users ALTER COLUMN {quoted_name} DROP NOT NULL")
+                    )
+
+
 migrate_schema()
 
 
