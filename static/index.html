@@ -48,8 +48,8 @@
 
                 <section class="access-strip" aria-labelledby="clientAccessHeading">
                     <div class="access-icon" aria-hidden="true">C</div>
-                    <div class="access-copy"><h2 id="clientAccessHeading">Client capability</h2><p>Sent with each data operation and held only in this page.</p></div>
-                    <div class="access-control"><label class="sr-only" for="clientCapability">Client capability code</label><input id="clientCapability" type="password" autocomplete="off" placeholder="Enter client capability" required><button class="icon-button reveal-button" type="button" data-reveal="clientCapability" aria-label="Show client capability" title="Show capability">Show</button></div>
+                    <div class="access-copy"><h2 id="clientAccessHeading">Automatic visitor session</h2><p>Your data stays isolated in a private browser session, so no manual capability is required.</p></div>
+                    <div class="access-control"><span class="session-pill">Private session active</span></div>
                 </section>
 
                 <div class="operation-grid">
@@ -108,13 +108,11 @@
 
                 <section class="access-strip admin-access" aria-labelledby="adminAccessHeading" id="adminAccess">
                     <div class="access-icon admin-access-icon" aria-hidden="true">CG</div>
-                    <div class="access-copy"><h2 id="adminAccessHeading">Administrator sign in</h2><p>Protected with Argon2id, authenticator MFA, and an HttpOnly session.</p></div>
-                    <form class="admin-login-form" id="adminForm">
-                        <label class="sr-only" for="adminUsername">Administrator username</label><input id="adminUsername" type="text" autocomplete="username" placeholder="Administrator username" required>
-                        <label class="sr-only" for="adminPassword">Administrator password</label><input id="adminPassword" type="password" autocomplete="current-password" placeholder="Administrator password" required>
-                        <label class="sr-only" for="adminTotp">Six-digit authenticator code</label><input id="adminTotp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit MFA code" required>
-                        <button class="button button-admin" type="submit">Sign in securely</button>
-                    </form>
+                    <div class="access-copy"><h2 id="adminAccessHeading">Administrator sign in</h2><p>Protected with Google account verification and an HttpOnly administrator session.</p></div>
+                    <div class="admin-login-form" id="adminForm">
+                        <button class="button button-admin" type="button" id="googleAdminLogin">Continue with Google</button>
+                        <p class="admin-note">Authorized administrators are checked against the configured Google allowlist before the dashboard opens.</p>
+                    </div>
                 </section>
 
                 <div id="dashboardContent" hidden>

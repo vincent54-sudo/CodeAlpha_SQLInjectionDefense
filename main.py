@@ -1,3 +1,4 @@
+from starlette.middleware.sessions import SessionMiddleware
 import base64
 import argparse
 import csv
@@ -6,7 +7,10 @@ import hashlib
 import hmac
 import html
 import io
+import json
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import re
 import secrets
 import struct
@@ -15,16 +19,57 @@ import unicodedata
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Generator
-from urllib.parse import unquote
+from urllib.parse import quote, unquote, urlencode
+from urllib.request import urlopen
 
+import requests
 from argon2 import PasswordHasher
+from authlib.jose import jwt
+
+try:
+    from authlib.integrations.base_client import OAuthError
+    from authlib.integrations.starlette_client import OAuth
+except ImportError:
+    class OAuthError(Exception):
+        pass
+
+    class OAuth:
+        def __init__(self):
+            self._clients = {}
+
+        def register(self, name: str, **kwargs):
+            self._clients[name] = kwargs
+
+        def __getattr__(self, name: str):
+            if name not in self._clients:
+                raise AttributeError(name)
+            return _FallbackOAuthClient(self._clients[name])
+
+    class _FallbackOAuthClient:
+        def __init__(self, config):
+            self.config = config
+
+        def authorize_redirect(self, request: Request, redirect_uri: str, **kwargs):
+            params = {
+                "client_id": self.config["client_id"],
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": self.config.get("client_kwargs", {}).get("scope", "openid email profile"),
+                "state": kwargs.get("state", ""),
+                "nonce": kwargs.get("nonce", ""),
+            }
+            url = f"{self.config['authorize_url']}?{urlencode(params)}"
+            return RedirectResponse(url=url)
+
+        def authorize_access_token(self, request: Request):
+            return {"id_token": request.query_params.get("id_token", "")}
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine, func, inspect, text
@@ -36,11 +81,19 @@ CLIENT_CAPABILITY_CODE = os.getenv("CLIENT_CAPABILITY_CODE", "")
 GCM_KEY_ENV = "AES_256_GCM_KEY"
 LEGACY_KEY_ENV = "LEGACY_AES_KEY"
 GCM_AAD = b"secure-cloud-credential:v2"
+CLIENT_SESSION_COOKIE = "cyberguard_client_session"
+CLIENT_SESSION_TTL = timedelta(days=7)
 ADMIN_SESSION_COOKIE = "cyberguard_admin_session"
 ADMIN_SESSION_TTL = timedelta(hours=8)
 password_hasher = PasswordHasher()
 
 app = FastAPI(title="CodeAlpha Secure Data & SQL Injection Defense")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET", "local-development-secret-change-me"),
+    same_site="lax",
+    https_only=False
+)
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")), name="static")
 
 
@@ -61,12 +114,35 @@ class Base(DeclarativeBase):
     pass
 
 
+class ClientSession(Base):
+    __tablename__ = "client_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc) + timedelta(days=7))
+    last_seen_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    user_agent = Column(String(255), default="")
+
+
 class UserRecord(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(128), unique=True, index=True, nullable=False)
+    session_id = Column(Integer, ForeignKey("client_sessions.id", ondelete="CASCADE"), nullable=True, index=True)
+    username = Column(String(128), index=True, nullable=False)
     encrypted_credential = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class GoogleOAuthState(Base):
+    __tablename__ = "google_oauth_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    state = Column(String(128), unique=True, index=True, nullable=False)
+    nonce = Column(String(128), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class SecurityAuditLog(Base):
@@ -128,14 +204,52 @@ def migrate_schema() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_security_logs_event_type ON security_logs (event_type)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_security_logs_timestamp ON security_logs (timestamp)"))
 
+    inspector = inspect(engine)
+    inspector = inspect(engine)
+    with engine.begin() as connection:
+        for table_name, required_columns in {
+            "users": [
+                ("session_id", "INTEGER"),
+                ("created_at", "DATETIME"),
+                ("username", "VARCHAR(128)"),
+                ("encrypted_credential", "TEXT"),
+            ],
+            "client_sessions": [
+                ("token_hash", "VARCHAR(64)"),
+                ("created_at", "DATETIME"),
+                ("expires_at", "DATETIME"),
+                ("last_seen_at", "DATETIME"),
+                ("user_agent", "VARCHAR(255)"),
+            ],
+            "google_oauth_state": [
+                ("state", "VARCHAR(128)"),
+                ("nonce", "VARCHAR(128)"),
+                ("expires_at", "DATETIME"),
+                ("created_at", "DATETIME"),
+            ],
+        }.items():
+            if not inspector.has_table(table_name):
+                continue
+            existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, column_type in required_columns:
+                if column_name not in existing_columns:
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+
 
 migrate_schema()
 
 
-def _decode_key(environment_name: str) -> bytes:
+def _resolve_or_create_runtime_key(environment_name: str) -> str:
     encoded = os.getenv(environment_name, "")
-    if not encoded:
-        raise RuntimeError(f"{environment_name} is not configured")
+    if encoded:
+        return encoded
+    generated = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+    os.environ[environment_name] = generated
+    return generated
+
+
+def _decode_key(environment_name: str) -> bytes:
+    encoded = _resolve_or_create_runtime_key(environment_name)
     try:
         key = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
     except (ValueError, base64.binascii.Error) as exc:
@@ -278,6 +392,10 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def _normalise_email_list(raw_value: str) -> set[str]:
+    return {email.strip().lower() for email in raw_value.split(",") if email.strip()}
+
+
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
@@ -370,6 +488,14 @@ def verify_client_capability(
     return _authorize(request, x_capability_code, CLIENT_CAPABILITY_CODE, "client")
 
 
+def _ensure_utc(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("ascii")).hexdigest()
 
@@ -392,6 +518,68 @@ def _verify_totp(secret: str, supplied_code: str) -> bool:
         return False
     now = int(datetime.now(timezone.utc).timestamp())
     return any(secrets.compare_digest(_totp_code(secret, now + offset * 30), supplied_code) for offset in (-1, 0, 1))
+
+
+def _set_secure_cookie(response: Response, key: str, value: str, *, max_age: int, path: str = "/") -> None:
+    response.set_cookie(
+        key,
+        value,
+        max_age=max_age,
+        httponly=True,
+        secure=os.getenv("COOKIE_SECURE", "true").lower() in {"1", "true", "yes"},
+        samesite="lax",
+        path=path,
+    )
+
+
+def get_or_create_client_session(request: Request, response: Response, db: Session) -> ClientSession:
+    token = request.cookies.get(CLIENT_SESSION_COOKIE)
+    now = datetime.now(timezone.utc)
+    if token:
+        session = db.query(ClientSession).filter_by(token_hash=_token_hash(token)).first()
+        if session:
+            expires_at = _ensure_utc(session.expires_at)
+            if expires_at > now:
+                session.last_seen_at = now
+                if expires_at - now < timedelta(days=2):
+                    session.expires_at = now + CLIENT_SESSION_TTL
+                db.commit()
+                request.state.client_session_token = token
+                return session
+            db.delete(session)
+            db.commit()
+    token = secrets.token_urlsafe(32)
+    session = ClientSession(
+        token_hash=_token_hash(token),
+        created_at=now,
+        expires_at=now + CLIENT_SESSION_TTL,
+        last_seen_at=now,
+        user_agent=request.headers.get("user-agent", "")[:255],
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    _set_secure_cookie(response, CLIENT_SESSION_COOKIE, token, max_age=int(CLIENT_SESSION_TTL.total_seconds()))
+    request.state.client_session_token = token
+    return session
+
+
+def require_client_session(request: Request, response: Response, db: Session = Depends(get_db)) -> ClientSession:
+    session = get_or_create_client_session(request, response, db)
+    request.state.client_session_id = session.id
+    request.state.client_csrf = _csrf_token(getattr(request.state, "client_session_token", request.cookies.get(CLIENT_SESSION_COOKIE) or ""))
+    return session
+
+
+def require_client_csrf(
+    request: Request,
+    session: ClientSession = Depends(require_client_session),
+    x_csrf_token: str | None = Header(default=None),
+) -> ClientSession:
+    expected = getattr(request.state, "client_csrf", "")
+    if x_csrf_token and expected and not secrets.compare_digest(x_csrf_token, expected):
+        raise HTTPException(status_code=403, detail="CSRF validation failed")
+    return session
 
 
 def require_admin(request: Request) -> AdminAccount:
@@ -440,6 +628,12 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    if request.url.path.startswith("/") and not request.url.path.startswith("/auth/") and not request.url.path.startswith("/secure") and not request.url.path.startswith("/static"):
+        try:
+            with SessionLocal() as db:
+                get_or_create_client_session(request, response, db)
+        except Exception:
+            pass
     if request.url.path.startswith("/secure/"):
         response.headers["Cache-Control"] = "no-store"
         route = request.scope.get("route")
@@ -484,56 +678,85 @@ def health_check():
 def get_help_guide():
     return {
         "title": "How this security search system works",
-        "plain_language": "If you have never used a search system before, think of it like a protected lookup box. You type a username, the system checks the input for suspicious SQL patterns, and it only returns a result when the request is safe and the user is authorized.",
+        "plain_language": "Think of this as a secure search and protection workflow. The app creates a private session for each visitor automatically, checks the username for unsafe SQL patterns, and only returns a result if the request is safe and the data belongs to the same session.",
         "steps": [
             {
-                "title": "1. Start with the client capability",
-                "detail": "This code proves the request comes from an approved client. Keep it private and enter it before storing or looking up any value."
+                "title": "1. Open the app and start a session",
+                "detail": "When you open the site, the server creates a private client session automatically. No manual code entry is required."
             },
             {
                 "title": "2. Store protected data safely",
-                "detail": "Use the store form to add a username and a secret. The app encrypts the value before it reaches the database."
+                "detail": "Type a username and a secret, and the app encrypts that value before storing it. It stays protected in the database."
             },
             {
-                "title": "3. Search with a safe username",
-                "detail": "Use a normal username such as alice or alex.morgan. If the input contains SQL attack patterns, the system blocks it and records the event."
+                "title": "3. Retrieve only your own data",
+                "detail": "The lookup is tied to your session, so your records stay private and other visitors cannot read them."
             },
             {
-                "title": "4. Sign in to the admin area",
-                "detail": "Open the security operations section, sign in with an administrator account, and enter the six-digit MFA code from your authenticator."
+                "title": "4. Test safe and blocked searches",
+                "detail": "A normal username works. A suspicious SQL payload is blocked, logged, and shown as a security alert instead of being executed."
+            },
+            {
+                "title": "5. Admin access uses Google",
+                "detail": "Authorized administrators sign in with Google. The app verifies the account, checks the allowlist, and then opens the security dashboard."
             }
         ],
         "common_tasks": [
-            {"label": "Store a secret", "detail": "Enter a username and a password, then click Encrypt and store."},
-            {"label": "Test a search", "detail": "Use a normal username or try a blocked SQL probe to see how the system reacts."},
-            {"label": "Admin sign in", "detail": "Open the security operations view, authenticate, and enter the MFA code from your authenticator."},
-            {"label": "Review incidents", "detail": "Inspect suspicious events, logs, and blocked requests to understand what the system detected."}
+            {"label": "Store a secret", "detail": "Enter a username and credential, then click Encrypt and store."},
+            {"label": "Retrieve a record", "detail": "Search for your own username to view the encrypted value that belongs to your session."},
+            {"label": "Test the filter", "detail": "Try a normal username and then a blocked SQL pattern to see the difference."},
+            {"label": "Admin sign in", "detail": "Open the security operations section and click Continue with Google."}
         ],
         "examples": [
             {"label": "Safe example", "example": "alice"},
-            {"label": "Blocked SQL probe", "example": "' OR '1'='1 --"}
+            {"label": "Blocked SQL probe", "example": "' OR '1'='1 --"},
+            {"label": "Your protected data", "example": "Stored only inside your own session"}
         ]
     }
 
 
-@app.post("/secure/store", dependencies=[Depends(verify_client_capability)])
-def store_user_data(user: UserCreate, request: Request, db: Session = Depends(get_db)):
-    existing_user = db.query(UserRecord).filter(UserRecord.username == user.username).first()
+@app.get("/secure/client-session", include_in_schema=False)
+def get_client_session(request: Request, response: Response, db: Session = Depends(get_db)):
+    session = get_or_create_client_session(request, response, db)
+    token = request.cookies.get(CLIENT_SESSION_COOKIE) or secrets.token_urlsafe(32)
+    return {"status": "active", "session_id": session.id, "csrf_token": _csrf_token(token)}
+
+
+@app.post("/secure/store")
+def store_user_data(
+    user: UserCreate,
+    request: Request,
+    response: Response,
+    session: ClientSession = Depends(require_client_csrf),
+    db: Session = Depends(get_db),
+):
+    if request.headers.get("x-capability-code") is not None:
+        _authorize(request, request.headers.get("x-capability-code"), CLIENT_CAPABILITY_CODE, "client")
+    if not getattr(request.state, "client_session_id", None):
+        raise HTTPException(status_code=401, detail="Client session required")
+    existing_user = db.query(UserRecord).filter(UserRecord.session_id == session.id, UserRecord.username == user.username).first()
     if existing_user:
         record_event(db, request=request, event_type="store_conflict", status="Rejected", label="duplicate username")
-        raise HTTPException(status_code=409, detail="A record with that username already exists.")
+        raise HTTPException(status_code=409, detail="A record with that username already exists in this session.")
     try:
         encrypted_value = encrypt_data(user.sensitive_credential)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail="Encryption is not configured correctly on the server.") from exc
-    db.add(UserRecord(username=user.username, encrypted_credential=encrypted_value))
+    db.add(UserRecord(session_id=session.id, username=user.username, encrypted_credential=encrypted_value))
     db.commit()
     record_event(db, request=request, event_type="data_stored", status="Success", label="credential stored")
     return {"status": "Success", "message": "Credential encrypted and stored.", "encryption_algorithm": "AES-256-GCM"}
 
 
-@app.post("/secure/retrieve", dependencies=[Depends(verify_client_capability)])
-def retrieve_user_data(search: UserSearch, request: Request, db: Session = Depends(get_db)):
+@app.post("/secure/retrieve")
+def retrieve_user_data(
+    search: UserSearch,
+    request: Request,
+    session: ClientSession = Depends(require_client_csrf),
+    db: Session = Depends(get_db),
+):
+    if request.headers.get("x-capability-code") is not None:
+        _authorize(request, request.headers.get("x-capability-code"), CLIENT_CAPABILITY_CODE, "client")
     findings = detect_sql_injection(search.username)
     if findings:
         record_event(
@@ -547,10 +770,10 @@ def retrieve_user_data(search: UserSearch, request: Request, db: Session = Depen
         )
         return {"status": "Blocked", "message": "The request matched suspicious SQL activity and was not executed.", "alerts": findings}
 
-    user_record = db.query(UserRecord).filter(UserRecord.username == search.username).first()
+    user_record = db.query(UserRecord).filter(UserRecord.session_id == session.id, UserRecord.username == search.username).first()
     if not user_record:
         record_event(db, request=request, event_type="record_not_found", status="Not found", label="credential lookup")
-        return {"status": "Not found", "message": "No record matched that username."}
+        return {"status": "Not found", "message": "No record matched that username in this session."}
 
     try:
         decrypted_credential = decrypt_data(user_record.encrypted_credential)
@@ -570,6 +793,133 @@ def retrieve_user_data(search: UserSearch, request: Request, db: Session = Depen
         "decrypted_plain_text": decrypted_credential,
         "encryption_algorithm": "AES-256-GCM",
     }
+
+
+def _get_google_oauth_client() -> OAuth:
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "")
+    if not client_id or not client_secret or not redirect_uri:
+        raise HTTPException(status_code=503, detail="Google OAuth is not configured")
+    oauth = OAuth()
+    oauth.register(
+        "google",
+        client_id=client_id,
+        client_secret=client_secret,
+        authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+        access_token_url="https://oauth2.googleapis.com/token",
+        jwks_uri="https://www.googleapis.com/oauth2/v3/certs",
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid email profile"},
+    )
+    return oauth
+
+
+def _verify_google_id_token(id_token: str) -> dict:
+    if not id_token:
+        raise ValueError("Missing Google ID token")
+    unverified_header = jwt.get_unverified_header(id_token)
+    jwks_url = "https://www.googleapis.com/oauth2/v3/certs"
+    with urlopen(jwks_url) as response:
+        jwks = json.load(response)
+    key_data = None
+    for key in jwks.get("keys", []):
+        if key.get("kid") == unverified_header.get("kid"):
+            key_data = key
+            break
+    if key_data is None:
+        raise ValueError("Google signing key not found")
+    claims = jwt.decode(id_token, key_data)
+    claims.validate()
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+    now = datetime.now(timezone.utc).timestamp()
+    if claims.get("iss") not in {"https://accounts.google.com", "accounts.google.com"}:
+        raise ValueError("Invalid Google issuer")
+    if claims.get("aud") != client_id:
+        raise ValueError("Invalid Google audience")
+    if claims.get("exp", 0) < now:
+        raise ValueError("Expired Google ID token")
+    if not claims.get("email_verified"):
+        raise ValueError("Google email not verified")
+    email = str(claims.get("email", "")).strip().lower()
+    if not email:
+        raise ValueError("Google email missing")
+    return {"email": email, "name": claims.get("name", email), "picture": claims.get("picture")}
+
+
+@app.get("/auth/google/login")
+async def google_login(request: Request, response: Response, db: Session = Depends(get_db)):
+    oauth = _get_google_oauth_client()
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    db.add(GoogleOAuthState(state=state, nonce=nonce, expires_at=expires_at))
+    db.commit()
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "")
+    return await oauth.google.authorize_redirect(request, redirect_uri, state=state, nonce=nonce)
+
+
+@app.get("/auth/google/callback")
+async def google_callback(request: Request, response: Response, db: Session = Depends(get_db)):
+    state = request.query_params.get("state", "")
+    code = request.query_params.get("code", "")
+    if not state or not code:
+        raise HTTPException(status_code=400, detail="Google callback missing required parameters")
+    oauth_state = db.query(GoogleOAuthState).filter_by(state=state).first()
+    if not oauth_state or (
+        oauth_state.expires_at.replace(tzinfo=timezone.utc)
+        if oauth_state.expires_at.tzinfo is None
+        else oauth_state.expires_at
+    ) <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Google authentication state expired or invalid")
+    oauth = _get_google_oauth_client()
+    try:
+        token = await oauth.google.authorize_access_token(request)
+        id_token = token.get("id_token")
+        claims = _verify_google_id_token(id_token)
+    except Exception as error:
+        print(
+            f"GOOGLE OAUTH ERROR: {type(error).__name__}: {error}",
+            flush=True
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="Google authentication failed. Please start a new login."
+        ) from error
+
+    email = claims["email"].lower()
+    allowed_emails = _normalise_email_list(os.getenv("ADMIN_ALLOWED_GOOGLE_EMAILS", ""))
+    if email not in allowed_emails:
+        return JSONResponse(status_code=403, content={"detail": "Access denied: Google account is not an authorized administrator."})
+
+    admin = db.query(AdminAccount).filter_by(username=email).first()
+    if not admin:
+        admin = AdminAccount(
+            username=email,
+            password_hash=password_hasher.hash(secrets.token_urlsafe(32)),
+            mfa_secret_encrypted=encrypt_data(base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")),
+            role="admin",
+            is_active=True,
+        )
+        db.add(admin)
+        db.commit()
+        db.refresh(admin)
+
+    token_value = secrets.token_urlsafe(32)
+    db.add(AdminSession(admin_id=admin.id, token_hash=_token_hash(token_value), expires_at=datetime.now(timezone.utc) + ADMIN_SESSION_TTL))
+    db.commit()
+    response.set_cookie(
+        ADMIN_SESSION_COOKIE,
+        token_value,
+        max_age=int(ADMIN_SESSION_TTL.total_seconds()),
+        httponly=True,
+        secure=os.getenv("COOKIE_SECURE", "true").lower() in {"1", "true", "yes"},
+        samesite="lax",
+        path="/",
+    )
+    db.delete(oauth_state)
+    db.commit()
+    return response
 
 
 @app.post("/secure/admin/login")

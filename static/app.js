@@ -2,6 +2,13 @@ const capabilityHeader = "x-capability-code";
 let dashboardData = null;
 let csrfToken = "";
 
+function getSessionHeaders(extra = {}) {
+    return {
+        "Content-Type": "application/json",
+        ...extra
+    };
+}
+
 function byId(id) {
     return document.getElementById(id);
 }
@@ -13,9 +20,13 @@ function setResult(element, message, isError = false) {
 }
 
 async function sendJson(url, capability, body) {
+    const headers = getSessionHeaders();
+    if (capability && capability.trim()) {
+        headers[capabilityHeader] = capability;
+    }
     const response = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", [capabilityHeader]: capability },
+        headers,
         body: JSON.stringify(body),
         cache: "no-store"
     });
@@ -85,15 +96,6 @@ function initializeNavigation() {
         toggle.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
     });
     byId("sidebarBackdrop")?.addEventListener("click", closeMobileNavigation);
-    document.querySelectorAll("[data-reveal]").forEach((button) => {
-        button.addEventListener("click", () => {
-            const input = byId(button.dataset.reveal);
-            const reveal = input.type === "password";
-            input.type = reveal ? "text" : "password";
-            button.textContent = reveal ? "Hide" : "Show";
-            button.setAttribute("aria-label", `${reveal ? "Hide" : "Show"} capability`);
-        });
-    });
     if (location.hash === "#monitor") showView("monitor");
 }
 
@@ -169,7 +171,7 @@ function initializeOperations() {
         const result = byId("storeResult");
         setBusy(button, true, "Encrypt and store");
         try {
-            const data = await sendJson("/secure/store", byId("clientCapability").value, {
+            const data = await sendJson("/secure/store", "", {
                 username: byId("storeUsername").value.trim(),
                 sensitive_credential: byId("storeCredential").value
             });
@@ -189,7 +191,7 @@ function initializeOperations() {
         const result = byId("retrieveResult");
         setBusy(button, true, "Inspect request");
         try {
-            const data = await sendJson("/secure/retrieve", byId("clientCapability").value, {
+            const data = await sendJson("/secure/retrieve", "", {
                 username: byId("searchUsername").value.trim()
             });
             const lines = [data.message || data.status];
@@ -430,6 +432,10 @@ async function loadDashboard() {
 }
 
 function initializeAdmin() {
+    const googleButton = byId("googleAdminLogin");
+    googleButton?.addEventListener("click", () => {
+        window.location.href = "/auth/google/login";
+    });
     const form = byId("adminForm");
     form?.addEventListener("submit", async (event) => {
         event.preventDefault();
