@@ -949,7 +949,7 @@ async def google_callback(request: Request, response: Response, db: Session = De
         samesite="lax",
         path="/",
     )
-    db.delete(oauth_state)
+    # Authlib manages OAuth state in the signed session; no database deletion needed.
     db.commit()
     return response
 
