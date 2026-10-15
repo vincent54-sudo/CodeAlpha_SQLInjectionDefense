@@ -432,10 +432,6 @@ async function loadDashboard() {
 }
 
 function initializeAdmin() {
-    const googleButton = byId("googleAdminLogin");
-    googleButton?.addEventListener("click", () => {
-        window.location.href = "/auth/google/login";
-    });
     const form = byId("adminForm");
     form?.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -447,8 +443,7 @@ function initializeAdmin() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     username: byId("adminUsername").value.trim(),
-                    password: byId("adminPassword").value,
-                    totp_code: byId("adminTotp").value
+                    password: byId("adminPassword").value
                 }),
                 cache: "no-store"
             });
@@ -456,14 +451,67 @@ function initializeAdmin() {
             if (!response.ok) throw new Error(login.detail || "Administrator sign in failed.");
             csrfToken = login.csrf_token;
             byId("adminPassword").value = "";
-            byId("adminTotp").value = "";
+            byId("adminLoginMessage").textContent = "";
             await loadDashboard();
         } catch (error) {
-            byId("monitorPlaceholder").querySelector("p").textContent = error.message;
+            setResult(byId("adminLoginMessage"), error.message, true);
         } finally {
             setBusy(button, false, "Sign in securely");
         }
     });
+    const registrationForm = byId("adminRegisterForm");
+    const registrationToggle = byId("showAdminRegistration");
+    const showAdminLogin = () => {
+        registrationForm.hidden = true;
+        form.hidden = false;
+        byId("adminLoginMessage").textContent = "";
+    };
+    const showAdminRegistration = () => {
+        form.hidden = true;
+        registrationForm.hidden = false;
+        byId("adminRegisterMessage").textContent = "";
+        byId("registerAdminUsername").focus();
+    };
+    registrationToggle?.addEventListener("click", showAdminRegistration);
+    byId("backToAdminLogin")?.addEventListener("click", showAdminLogin);
+    registrationForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = registrationForm.querySelector("button[type=submit]");
+        setBusy(button, true, "Register administrator");
+        try {
+            const response = await fetch("/secure/admin/register", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    username: byId("registerAdminUsername").value.trim(),
+                    password: byId("registerAdminPassword").value,
+                    confirm_password: byId("registerAdminConfirmPassword").value,
+                    setup_key: byId("adminSetupKey").value
+                }),
+                cache: "no-store"
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.detail || "Administrator registration failed.");
+            registrationForm.reset();
+            registrationToggle.hidden = true;
+            showAdminLogin();
+            setResult(byId("adminLoginMessage"), "Administrator registered. Sign in with your new account.");
+        } catch (error) {
+            setResult(byId("adminRegisterMessage"), error.message, true);
+        } finally {
+            setBusy(button, false, "Register administrator");
+        }
+    });
+    fetch("/secure/admin/registration-status", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) return;
+        const status = await response.json();
+        const canRegister = Boolean(status.registration_available);
+        registrationToggle.hidden = !canRegister;
+        if (canRegister) {
+            showAdminRegistration();
+            setResult(byId("adminRegisterMessage"), "Create the first administrator account before signing in.");
+        }
+    }).catch(() => {});
     byId("refreshDashboard")?.addEventListener("click", async () => {
         try {
             await loadDashboard();

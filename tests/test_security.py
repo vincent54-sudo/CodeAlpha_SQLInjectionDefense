@@ -24,6 +24,8 @@ def service_client(monkeypatch):
     monkeypatch.setattr(main, "CLIENT_CAPABILITY_CODE", "test-client-capability")
     monkeypatch.setenv("COOKIE_SECURE", "false")
     monkeypatch.setenv("AES_256_GCM_KEY", base64.urlsafe_b64encode(b"K" * 32).decode("ascii").rstrip("="))
+    main.failed_admin_logins.clear()
+    main.failed_admin_registrations.clear()
     main.create_initial_admin("test-admin", "test-admin-password-strong")
     with TestClient(main.app) as client:
         yield client, test_sessions
@@ -31,19 +33,43 @@ def service_client(monkeypatch):
 
 
 def login_admin(client, sessions):
-    with sessions() as db:
-        admin = db.query(main.AdminAccount).filter_by(username="test-admin").one()
-        mfa_secret = main.decrypt_data(admin.mfa_secret_encrypted)
     response = client.post(
         "/secure/admin/login",
         json={
             "username": "test-admin",
             "password": "test-admin-password-strong",
-            "totp_code": main._totp_code(mfa_secret),
         },
     )
     assert response.status_code == 200
     return response.json()["csrf_token"]
+
+
+@pytest.fixture
+def uninitialized_service_client(monkeypatch):
+    test_engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    main.Base.metadata.create_all(bind=test_engine)
+    test_sessions = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+    monkeypatch.setattr(main, "SessionLocal", test_sessions)
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+    monkeypatch.setenv("AES_256_GCM_KEY", base64.urlsafe_b64encode(b"R" * 32).decode("ascii").rstrip("="))
+    main.failed_admin_logins.clear()
+    main.failed_admin_registrations.clear()
+    with TestClient(main.app) as client:
+        yield client, test_sessions
+    test_engine.dispose()
+
+
+def registration_payload(setup_key="one-time-setup-secret"):
+    return {
+        "username": "first-admin",
+        "password": "Strong-Admin-Password-2026!",
+        "confirm_password": "Strong-Admin-Password-2026!",
+        "setup_key": setup_key,
+    }
 
 
 @pytest.mark.parametrize(
@@ -202,20 +228,15 @@ def test_export_requires_admin_header_and_returns_redacted_events(service_client
     assert "test-admin-password-strong" not in allowed.text
 
 
-def test_admin_login_requires_mfa_and_logout_revokes_session(service_client):
+def test_admin_password_login_and_logout_revokes_session(service_client):
     client, sessions = service_client
-    with sessions() as db:
-        admin = db.query(main.AdminAccount).one()
-        mfa_secret = main.decrypt_data(admin.mfa_secret_encrypted)
-    failed = client.post("/secure/admin/login", json={
-        "username": "test-admin", "password": "test-admin-password-strong", "totp_code": "000000",
-    })
-    assert failed.status_code == 401
     logged_in = client.post("/secure/admin/login", json={
-        "username": "test-admin", "password": "test-admin-password-strong", "totp_code": main._totp_code(mfa_secret),
+        "username": "test-admin", "password": "test-admin-password-strong",
     })
     assert logged_in.status_code == 200
     assert "httponly" in logged_in.headers["set-cookie"].lower()
+    assert "test-admin-password-strong" not in logged_in.text
+    assert main.ADMIN_SESSION_COOKIE not in logged_in.json()
     csrf = logged_in.json()["csrf_token"]
     assert client.get("/secure/admin/session").json()["role"] == "admin"
     logout = client.post("/secure/admin/logout", headers={"x-csrf-token": csrf})
@@ -226,18 +247,14 @@ def test_admin_login_requires_mfa_and_logout_revokes_session(service_client):
 def test_admin_account_locks_after_configured_failed_attempts(service_client, monkeypatch):
     client, sessions = service_client
     monkeypatch.setenv("ADMIN_ACCOUNT_LOCKOUT_THRESHOLD", "3")
-    with sessions() as db:
-        admin = db.query(main.AdminAccount).one()
-        mfa_secret = main.decrypt_data(admin.mfa_secret_encrypted)
     for _ in range(3):
         response = client.post("/secure/admin/login", json={
-            "username": "test-admin", "password": "incorrect-password-long", "totp_code": "000000",
+            "username": "test-admin", "password": "incorrect-password-long",
         })
         assert response.status_code == 401
     assert client.post("/secure/admin/login", json={
         "username": "test-admin",
         "password": "test-admin-password-strong",
-        "totp_code": main._totp_code(mfa_secret),
     }).status_code == 401
     with sessions() as db:
         assert db.query(main.AdminAccount).one().locked_until is not None
@@ -275,6 +292,66 @@ def test_admin_setup_rejects_weak_or_duplicate_accounts(service_client):
         main.create_initial_admin("another-admin", "short")
     with pytest.raises(ValueError, match="already exists"):
         main.create_initial_admin("another-admin", "another-admin-password-long")
+
+
+def test_first_admin_registration_succeeds_and_stores_only_argon2_hash(uninitialized_service_client, monkeypatch):
+    client, sessions = uninitialized_service_client
+    monkeypatch.setenv("ADMIN_SETUP_KEY", "one-time-setup-secret")
+    assert client.get("/secure/admin/registration-status").json() == {"registration_available": True}
+    response = client.post("/secure/admin/register", json=registration_payload())
+    assert response.status_code == 201
+    assert response.json() == {"username": "first-admin", "role": "admin", "status": "registered"}
+    assert "Strong-Admin-Password-2026!" not in response.text
+    assert "one-time-setup-secret" not in response.text
+    with sessions() as db:
+        account = db.query(main.AdminAccount).one()
+        assert account.password_hash != "Strong-Admin-Password-2026!"
+        assert main.password_hasher.verify(account.password_hash, "Strong-Admin-Password-2026!")
+        assert client.get("/secure/admin/registration-status").json() == {"registration_available": False}
+
+
+def test_registration_rejected_when_setup_key_is_not_configured(uninitialized_service_client, monkeypatch):
+    client, _ = uninitialized_service_client
+    monkeypatch.delenv("ADMIN_SETUP_KEY", raising=False)
+    response = client.post("/secure/admin/register", json=registration_payload())
+    assert response.status_code == 503
+
+
+def test_registration_rejected_with_incorrect_setup_key(uninitialized_service_client, monkeypatch):
+    client, _ = uninitialized_service_client
+    monkeypatch.setenv("ADMIN_SETUP_KEY", "correct-setup-key")
+    response = client.post("/secure/admin/register", json=registration_payload("incorrect-key"))
+    assert response.status_code == 403
+
+
+def test_second_admin_registration_is_rejected(uninitialized_service_client, monkeypatch):
+    client, sessions = uninitialized_service_client
+    monkeypatch.setenv("ADMIN_SETUP_KEY", "one-time-setup-secret")
+    assert client.post("/secure/admin/register", json=registration_payload()).status_code == 201
+    duplicate = registration_payload()
+    duplicate["username"] = "second-admin"
+    assert client.post("/secure/admin/register", json=duplicate).status_code == 409
+    with sessions() as db:
+        assert db.query(main.AdminAccount).count() == 1
+
+
+def test_admin_login_rejects_incorrect_password(service_client):
+    client, _ = service_client
+    response = client.post("/secure/admin/login", json={
+        "username": "test-admin", "password": "not-the-admin-password",
+    })
+    assert response.status_code == 401
+
+
+def test_inactive_admin_cannot_login(service_client):
+    client, sessions = service_client
+    with sessions() as db:
+        db.query(main.AdminAccount).one().is_active = False
+        db.commit()
+    response = client.post("/secure/admin/login", json={
+        "username": "test-admin", "password": "test-admin-password-strong",
+    })
+    assert response.status_code == 401
 
 
 def test_validation_errors_do_not_echo_sensitive_input(service_client):

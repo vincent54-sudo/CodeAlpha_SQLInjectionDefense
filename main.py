@@ -13,30 +13,25 @@ from dotenv import load_dotenv
 load_dotenv()
 import re
 import secrets
-import struct
 import threading
 import unicodedata
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Generator
 from urllib.parse import quote, unquote, urlencode
-from urllib.request import urlopen
 
 import requests
 from argon2 import PasswordHasher
-from authlib.jose import jwt
 
-from authlib.integrations.base_client import OAuthError
-from authlib.integrations.starlette_client import OAuth
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -53,9 +48,9 @@ ADMIN_SESSION_TTL = timedelta(hours=8)
 password_hasher = PasswordHasher()
 
 app = FastAPI(title="CodeAlpha Secure Data & SQL Injection Defense")
-SESSION_SECRET = os.getenv("SESSION_SECRET")
-if not SESSION_SECRET:
-    raise RuntimeError("SESSION_SECRET must be configured in production")
+SESSION_SECRET = os.getenv("SESSION_SECRET") or "dev-local-session-secret-change-me"
+if not os.getenv("SESSION_SECRET"):
+    os.environ["SESSION_SECRET"] = SESSION_SECRET
 
 app.add_middleware(
     SessionMiddleware,
@@ -366,7 +361,40 @@ class UserSearch(BaseModel):
 class AdminLogin(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=1024)
-    totp_code: str = Field(min_length=6, max_length=6)
+
+
+class AdminRegistration(BaseModel):
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=14, max_length=1024)
+    confirm_password: str = Field(min_length=14, max_length=1024)
+    setup_key: str = Field(min_length=1, max_length=1024)
+
+    @field_validator("username")
+    @classmethod
+    def validate_admin_username(cls, value: str) -> str:
+        normalized = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,63}", normalized):
+            raise ValueError("Username must be 3-64 characters using letters, numbers, dots, underscores, or hyphens")
+        return normalized
+
+    @field_validator("password")
+    @classmethod
+    def validate_admin_password_strength(cls, value: str) -> str:
+        character_classes = (
+            any(character.islower() for character in value),
+            any(character.isupper() for character in value),
+            any(character.isdigit() for character in value),
+            any(not character.isalnum() for character in value),
+        )
+        if value.isspace() or sum(character_classes) < 3:
+            raise ValueError("Password must be 14+ characters and use at least three character types")
+        return value
+
+    @model_validator(mode="after")
+    def validate_password_confirmation(self):
+        if not hmac.compare_digest(self.password.encode("utf-8"), self.confirm_password.encode("utf-8")):
+            raise ValueError("Passwords do not match")
+        return self
 
 
 class IncidentUpdate(BaseModel):
@@ -380,10 +408,6 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
-
-
-def _normalise_email_list(raw_value: str) -> set[str]:
-    return {email.strip().lower() for email in raw_value.split(",") if email.strip()}
 
 
 def _client_ip(request: Request) -> str:
@@ -434,7 +458,19 @@ def record_event(
 failed_capability_attempts: dict[str, deque[datetime]] = defaultdict(deque)
 capability_request_windows: dict[str, deque[datetime]] = defaultdict(deque)
 failed_admin_logins: dict[str, deque[datetime]] = defaultdict(deque)
+failed_admin_registrations: dict[str, deque[datetime]] = defaultdict(deque)
 attempt_lock = threading.Lock()
+admin_registration_lock = threading.Lock()
+
+
+def _lock_admin_registration(db: Session) -> None:
+    dialect = db.get_bind().dialect.name
+    if dialect == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+    elif dialect == "postgresql":
+        db.execute(text("LOCK TABLE admin_accounts IN EXCLUSIVE MODE"))
+    else:
+        raise RuntimeError("First-administrator registration is not supported for this database backend")
 
 
 def _authorize(request: Request, supplied: str | None, expected: str, permission: str) -> str:
@@ -492,22 +528,6 @@ def _token_hash(token: str) -> str:
 
 def _csrf_token(session_token: str) -> str:
     return hmac.new(session_token.encode("ascii"), b"cyberguard-admin-csrf-v1", hashlib.sha256).hexdigest()
-
-
-def _totp_code(secret: str, timestamp: int | None = None) -> str:
-    key = base64.b32decode(secret + "=" * (-len(secret) % 8), casefold=True)
-    counter = int((timestamp if timestamp is not None else int(datetime.now(timezone.utc).timestamp())) // 30)
-    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
-    offset = digest[-1] & 0x0F
-    value = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % 1_000_000
-    return f"{value:06d}"
-
-
-def _verify_totp(secret: str, supplied_code: str) -> bool:
-    if not re.fullmatch(r"\d{6}", supplied_code):
-        return False
-    now = int(datetime.now(timezone.utc).timestamp())
-    return any(secrets.compare_digest(_totp_code(secret, now + offset * 30), supplied_code) for offset in (-1, 0, 1))
 
 
 def _set_secure_cookie(response: Response, key: str, value: str, *, max_age: int, path: str = "/") -> None:
@@ -785,173 +805,54 @@ def retrieve_user_data(
     }
 
 
-def _get_google_oauth_client() -> OAuth:
-    client_id = os.getenv("GOOGLE_CLIENT_ID", "")
-    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
-    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "")
-    if not client_id or not client_secret or not redirect_uri:
-        raise HTTPException(status_code=503, detail="Google OAuth is not configured")
-    oauth = OAuth()
-    oauth.register(
-        "google",
-        client_id=client_id,
-        client_secret=client_secret,
-        authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
-        access_token_url="https://oauth2.googleapis.com/token",
-        jwks_uri="https://www.googleapis.com/oauth2/v3/certs",
-        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-        client_kwargs={"scope": "openid email profile"},
-    )
-    return oauth
+@app.get("/secure/admin/registration-status")
+def admin_registration_status(db: Session = Depends(get_db)):
+    exists = db.query(AdminAccount.id).first() is not None
+    return {"registration_available": not exists and bool(os.getenv("ADMIN_SETUP_KEY", ""))}
 
 
-def _verify_google_id_token(id_token: str) -> dict:
-    import base64
+@app.post("/secure/admin/register", status_code=201)
+def register_first_admin(registration: AdminRegistration, request: Request, db: Session = Depends(get_db)):
+    source_ip = _client_ip(request)
+    now = datetime.now(timezone.utc)
+    with attempt_lock:
+        attempts = failed_admin_registrations[source_ip]
+        while attempts and attempts[0] < now - timedelta(minutes=15):
+            attempts.popleft()
+        if len(attempts) >= _policy_int("ADMIN_REGISTRATION_ATTEMPTS_PER_15_MINUTES", 10):
+            raise HTTPException(status_code=429, detail="Too many registration attempts. Try again later.")
 
-    if not id_token:
-        raise ValueError("Missing Google ID token")
+    setup_key = os.getenv("ADMIN_SETUP_KEY", "")
+    if not setup_key:
+        raise HTTPException(status_code=503, detail="Administrator registration is not configured")
+    if not secrets.compare_digest(registration.setup_key.encode("utf-8"), setup_key.encode("utf-8")):
+        with attempt_lock:
+            failed_admin_registrations[source_ip].append(now)
+        record_event(db, request=request, event_type="suspicious_login", status="Denied", label="administrator registration setup key rejected", severity="high")
+        raise HTTPException(status_code=403, detail="Administrator setup key is invalid")
 
-    # Read the untrusted header only to select Google's signing key.
-    try:
-        encoded_header = id_token.split(".")[0]
-        padded_header = encoded_header + "=" * (-len(encoded_header) % 4)
-        unverified_header = json.loads(
-            base64.urlsafe_b64decode(padded_header).decode("utf-8")
-        )
-    except Exception as error:
-        raise ValueError("Invalid Google ID token header") from error
+    with admin_registration_lock:
+        try:
+            _lock_admin_registration(db)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail="Administrator registration is unavailable") from exc
+        if db.query(AdminAccount.id).first() is not None:
+            raise HTTPException(status_code=409, detail="Administrator registration is permanently closed")
 
-    if unverified_header.get("alg") != "RS256":
-        raise ValueError("Unsupported Google ID token algorithm")
-
-    kid = unverified_header.get("kid")
-    if not kid:
-        raise ValueError("Google signing key ID missing")
-
-    jwks_url = "https://www.googleapis.com/oauth2/v3/certs"
-    with urlopen(jwks_url, timeout=10) as response:
-        jwks = json.load(response)
-
-    key_data = next(
-        (key for key in jwks.get("keys", []) if key.get("kid") == kid),
-        None,
-    )
-    if key_data is None:
-        raise ValueError("Google signing key not found")
-
-    # Authlib verifies the token signature using Google's public key.
-    claims = jwt.decode(id_token, key_data)
-    claims.validate()
-
-    client_id = os.getenv("GOOGLE_CLIENT_ID", "")
-    if not client_id:
-        raise ValueError("Google client ID is not configured")
-
-    if claims.get("iss") not in {
-        "https://accounts.google.com",
-        "accounts.google.com",
-    }:
-        raise ValueError("Invalid Google issuer")
-
-    audience = claims.get("aud")
-    if isinstance(audience, list):
-        if client_id not in audience:
-            raise ValueError("Invalid Google audience")
-        if len(audience) > 1 and claims.get("azp") != client_id:
-            raise ValueError("Invalid Google authorized party")
-    elif audience != client_id:
-        raise ValueError("Invalid Google audience")
-
-    now = datetime.now(timezone.utc).timestamp()
-    if claims.get("exp", 0) < now:
-        raise ValueError("Expired Google ID token")
-
-    if not claims.get("email_verified"):
-        raise ValueError("Google email not verified")
-
-    email = str(claims.get("email", "")).strip().lower()
-    if not email:
-        raise ValueError("Google email missing")
-
-    return {
-        "email": email,
-        "name": claims.get("name", email),
-        "picture": claims.get("picture"),
-    }
-
-
-@app.get("/auth/google/login")
-async def google_login(request: Request, response: Response, db: Session = Depends(get_db)):
-    oauth = _get_google_oauth_client()
-    nonce = secrets.token_urlsafe(32)
-    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "")
-
-    if not redirect_uri:
-        raise HTTPException(status_code=500, detail="Google redirect URI is not configured")
-
-    # Authlib generates state and stores it in the signed session.
-    return await oauth.google.authorize_redirect(
-        request,
-        redirect_uri,
-        nonce=nonce
-    )
-
-
-@app.get("/auth/google/callback")
-async def google_callback(request: Request, response: Response, db: Session = Depends(get_db)):
-    if not request.query_params.get("state") or not request.query_params.get("code"):
-        raise HTTPException(
-            status_code=400,
-            detail="Google callback missing required parameters"
-        )
-
-    oauth = _get_google_oauth_client()
-    try:
-        token = await oauth.google.authorize_access_token(request)
-        id_token = token.get("id_token")
-        claims = _verify_google_id_token(id_token)
-    except Exception as error:
-        import traceback
-        print("GOOGLE OAUTH CALLBACK FAILURE:", flush=True)
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=401,
-            detail=f"Google authentication failed: {type(error).__name__}"
-        ) from error
-
-    email = claims["email"].lower()
-    allowed_emails = _normalise_email_list(os.getenv("ADMIN_ALLOWED_GOOGLE_EMAILS", ""))
-    if email not in allowed_emails:
-        return JSONResponse(status_code=403, content={"detail": "Access denied: Google account is not an authorized administrator."})
-
-    admin = db.query(AdminAccount).filter_by(username=email).first()
-    if not admin:
+        placeholder_secret = base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
         admin = AdminAccount(
-            username=email,
-            password_hash=password_hasher.hash(secrets.token_urlsafe(32)),
-            mfa_secret_encrypted=encrypt_data(base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")),
+            username=registration.username,
+            password_hash=password_hasher.hash(registration.password),
+            mfa_secret_encrypted=encrypt_data(placeholder_secret),
             role="admin",
             is_active=True,
         )
         db.add(admin)
         db.commit()
-        db.refresh(admin)
-
-    token_value = secrets.token_urlsafe(32)
-    db.add(AdminSession(admin_id=admin.id, token_hash=_token_hash(token_value), expires_at=datetime.now(timezone.utc) + ADMIN_SESSION_TTL))
-    db.commit()
-    response.set_cookie(
-        ADMIN_SESSION_COOKIE,
-        token_value,
-        max_age=int(ADMIN_SESSION_TTL.total_seconds()),
-        httponly=True,
-        secure=os.getenv("COOKIE_SECURE", "true").lower() in {"1", "true", "yes"},
-        samesite="lax",
-        path="/",
-    )
-    # Authlib manages OAuth state in the signed session; no database deletion needed.
-    db.commit()
-    return response
+        with attempt_lock:
+            failed_admin_registrations.pop(source_ip, None)
+        record_event(db, request=request, event_type="admin_registered", status="Success", label="first administrator registered")
+    return {"username": admin.username, "role": admin.role, "status": "registered"}
 
 
 @app.post("/secure/admin/login")
@@ -969,19 +870,11 @@ def admin_login(credentials: AdminLogin, request: Request, response: Response, d
     admin = db.query(AdminAccount).filter_by(username=credentials.username).first()
     is_locked = bool(admin and admin.locked_until and admin.locked_until.replace(tzinfo=timezone.utc) > now)
     valid = False
-    if admin and admin.is_active and not is_locked:
+    if admin and admin.is_active and admin.role == "admin" and not is_locked:
         try:
             valid = password_hasher.verify(admin.password_hash, credentials.password)
         except (VerifyMismatchError, VerificationError, InvalidHashError):
             valid = False
-        if valid:
-            try:
-                mfa_secret = decrypt_data(admin.mfa_secret_encrypted)
-                valid = _verify_totp(mfa_secret, credentials.totp_code)
-                if valid and not _uses_current_encryption_key(admin.mfa_secret_encrypted):
-                    admin.mfa_secret_encrypted = encrypt_data(mfa_secret)
-            except (RuntimeError, InvalidTag, ValueError, base64.binascii.Error):
-                valid = False
 
     if not valid:
         with attempt_lock:
@@ -992,7 +885,7 @@ def admin_login(credentials: AdminLogin, request: Request, response: Response, d
                 admin.locked_until = now + timedelta(minutes=_policy_int("ADMIN_LOCKOUT_MINUTES", 15, maximum=1440))
             db.commit()
         record_event(db, request=request, event_type="suspicious_login", status="Denied", label="administrator login failed", severity="high")
-        raise HTTPException(status_code=401, detail="Invalid credentials or verification code")
+        raise HTTPException(status_code=401, detail="Invalid username or password")
 
     admin.failed_login_count = 0
     admin.locked_until = None
@@ -1195,7 +1088,7 @@ def export_security_logs(admin: AdminAccount = Depends(require_admin), db: Sessi
     )
 
 
-def create_initial_admin(username: str, password: str) -> str:
+def create_initial_admin(username: str, password: str) -> None:
     normalized_username = username.strip()
     if not normalized_username or len(normalized_username) > 128:
         raise ValueError("Username must contain between 1 and 128 characters")
@@ -1204,33 +1097,30 @@ def create_initial_admin(username: str, password: str) -> str:
     with SessionLocal() as db:
         if db.query(AdminAccount).count():
             raise ValueError("An administrator account already exists")
-        mfa_secret = base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+        placeholder_secret = base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
         db.add(AdminAccount(
             username=normalized_username,
             password_hash=password_hasher.hash(password),
-            mfa_secret_encrypted=encrypt_data(mfa_secret),
+            mfa_secret_encrypted=encrypt_data(placeholder_secret),
             role="admin",
         ))
         db.commit()
-        return mfa_secret
 
 
 def setup_admin_cli() -> None:
     parser = argparse.ArgumentParser(description="Create the first CyberGuard administrator")
     parser.add_argument("--username", required=True, help="Administrator account name")
     args = parser.parse_args()
-    password = getpass.getpass("Administrator password (14+ characters): ")
+    password = getpass.getpass("Administrator password (14+ characters, strong): ")
     confirmation = getpass.getpass("Confirm administrator password: ")
     if not secrets.compare_digest(password, confirmation):
         parser.error("The passwords did not match")
     try:
-        mfa_secret = create_initial_admin(args.username, password)
+        create_initial_admin(args.username, password)
     except (RuntimeError, ValueError) as exc:
         parser.error(str(exc))
     print(f"Administrator {args.username.strip()} created.")
-    print("Add this TOTP seed to an authenticator now; it is shown once:")
-    print(mfa_secret)
-    print("The seed is encrypted in the database. Do not put it in logs or source control.")
+    print("Administrator password authentication is ready.")
 
 
 if __name__ == "__main__":

@@ -107,10 +107,16 @@ h1 { margin-bottom: 8px; font-size: clamp(28px, 3vw, 36px); font-weight: 600; le
 .admin-access { grid-template-columns: 42px minmax(180px, 1fr) minmax(280px, 480px); background: #f2ece5; border-color: #e8ddd1; }
 .admin-access-icon { color: white; background: #795445; }
 .admin-access .access-copy h2 { color: #49362e; }
-.admin-access .access-control { gap: 7px; }
-.admin-access .access-control input { padding-right: 12px; }
+.admin-auth-forms { min-width: 0; }
+.admin-login-form { display: grid; gap: 8px; }
+.admin-login-form label { display: grid; gap: 4px; color: #49362e; font-size: 10px; font-weight: 600; }
+.admin-login-form input { width: 100%; min-width: 0; min-height: 37px; padding: 0 10px; color: var(--ink); background: white; border: 1px solid #d9c9bc; border-radius: 4px; font-size: 12px; }
+.admin-login-form input:focus { border-color: #795445; box-shadow: 0 0 0 3px rgb(121 84 69 / 14%); outline: none; }
 .button-admin { min-width: 105px; color: white; background: #795445; }
 .button-admin:hover:not(:disabled) { background: #634237; }
+.admin-link { width: fit-content; padding: 2px 0; color: #654639; background: transparent; border: 0; font-size: 10px; text-align: left; text-decoration: underline; text-underline-offset: 2px; }
+.admin-note { min-height: 0; margin: 0; color: #725d52; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.admin-note.is-error { color: #a3473c; }
 .dashboard-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 20px 0 12px; }
 .dashboard-toolbar p { display: flex; align-items: center; gap: 9px; margin: 0; color: var(--muted); font-size: 11px; }
 .button-outline { min-height: 38px; color: #45564f; background: transparent; border-color: #cbd7cf; }
@@ -225,9 +231,7 @@ tbody tr:last-child td { border-bottom: 0; }
     .operation-grid { grid-template-columns: minmax(0, 1fr); gap: 13px; margin-top: 13px; }
     .operation-surface { padding: 19px; }
     .surface-copy { min-height: 0; }
-    .admin-access .access-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
-    .admin-access .access-control input { grid-column: 1 / -1; }
-    .admin-access .button-admin { grid-column: 1 / -1; }
+    .admin-auth-forms { grid-column: 1 / -1; }
     .chart-wrap { height: 175px; }
     .chart-surface, .system-surface, .table-surface, .ips-surface { padding: 15px; }
     .page-footer { align-items: flex-start; flex-direction: column; padding-top: 17px; }

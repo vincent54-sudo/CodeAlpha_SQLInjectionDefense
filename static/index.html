@@ -108,10 +108,24 @@
 
                 <section class="access-strip admin-access" aria-labelledby="adminAccessHeading" id="adminAccess">
                     <div class="access-icon admin-access-icon" aria-hidden="true">CG</div>
-                    <div class="access-copy"><h2 id="adminAccessHeading">Administrator sign in</h2><p>Protected with Google account verification and an HttpOnly administrator session.</p></div>
-                    <div class="admin-login-form" id="adminForm">
-                        <button class="button button-admin" type="button" id="googleAdminLogin">Continue with Google</button>
-                        <p class="admin-note">Authorized administrators are checked against the configured Google allowlist before the dashboard opens.</p>
+                    <div class="access-copy"><h2 id="adminAccessHeading">Administrator access</h2><p>Sign in with your administrator username and password.</p></div>
+                    <div class="admin-auth-forms">
+                        <form class="admin-login-form" id="adminForm">
+                            <label><span>Username</span><input id="adminUsername" name="username" type="text" maxlength="128" autocomplete="username" required></label>
+                            <label><span>Password</span><input id="adminPassword" name="password" type="password" maxlength="1024" autocomplete="current-password" required></label>
+                            <button class="button button-admin" type="submit">Sign in securely</button>
+                            <button class="admin-link" id="showAdminRegistration" type="button" hidden>First-time administrator setup</button>
+                            <p class="admin-note" id="adminLoginMessage" role="status" aria-live="polite"></p>
+                        </form>
+                        <form class="admin-login-form" id="adminRegisterForm" hidden>
+                            <label><span>Username</span><input id="registerAdminUsername" name="username" type="text" minlength="3" maxlength="64" autocomplete="username" required></label>
+                            <label><span>Password</span><input id="registerAdminPassword" name="password" type="password" minlength="14" maxlength="1024" autocomplete="new-password" required></label>
+                            <label><span>Confirm password</span><input id="registerAdminConfirmPassword" name="confirm_password" type="password" minlength="14" maxlength="1024" autocomplete="new-password" required></label>
+                            <label><span>One-time setup key</span><input id="adminSetupKey" name="setup_key" type="password" maxlength="1024" autocomplete="off" required></label>
+                            <button class="button button-admin" type="submit">Register administrator</button>
+                            <button class="admin-link" id="backToAdminLogin" type="button">Back to sign in</button>
+                            <p class="admin-note" id="adminRegisterMessage" role="status" aria-live="polite"></p>
+                        </form>
                     </div>
                 </section>
 
@@ -141,7 +155,7 @@
                             <div class="surface-heading"><div><span class="step-label">SERVICE HEALTH</span><h2 id="systemHeading">System status</h2></div><span class="health-check" aria-hidden="true">✓</span></div>
                             <div class="health-row"><span>API & database</span><strong id="systemStatus">Unknown</strong></div>
                             <div class="health-row"><span>Credential encryption</span><strong id="encryptionStatus">Unknown</strong></div>
-                            <div class="health-row"><span>Administrator MFA</span><strong id="authStatus">Unknown</strong></div>
+                            <div class="health-row"><span>Administrator authentication</span><strong id="authStatus">Unknown</strong></div>
                             <div class="health-row"><span>API security</span><strong id="apiSecurityStatus">Unknown</strong></div>
                             <div class="health-row"><span>Records protected</span><strong id="protectedUsers">0</strong></div>
                             <div class="health-row"><span>Database activity</span><strong id="databaseActivity">0 stored · 0 retrieved</strong></div>
@@ -169,7 +183,7 @@
                         <div class="table-scroll"><table class="incident-table"><thead><tr><th>Incident</th><th>Risk</th><th>Source / time</th><th>Reason flagged</th><th>Investigation notes</th><th>State</th></tr></thead><tbody id="incidentTable"><tr><td colspan="6" class="empty-cell">No incidents recorded.</td></tr></tbody></table></div>
                     </section>
                 </div>
-                <div class="monitor-placeholder" id="monitorPlaceholder"><span class="lock-mark" aria-hidden="true">CG</span><h2>Administrator session required</h2><p>Authenticate with your administrator account and authenticator code to access security operations.</p></div>
+                <div class="monitor-placeholder" id="monitorPlaceholder"><span class="lock-mark" aria-hidden="true">CG</span><h2>Administrator session required</h2><p>Sign in with your administrator username and password to access security operations.</p></div>
                 <footer class="page-footer"><span>Audit entries redact request contents and credentials.</span><a href="#operations" data-view-link="operations">Return to data operations <span aria-hidden="true">→</span></a></footer>
             </section>
         </main>
