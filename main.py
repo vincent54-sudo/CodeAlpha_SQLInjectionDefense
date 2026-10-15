@@ -856,8 +856,17 @@ def register_first_admin(registration: AdminRegistration, request: Request, db: 
 
 
 
-class AdminRecovery(AdminRegistration):
-    pass
+class AdminRecovery(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=14, max_length=1024)
+    confirm_password: str = Field(min_length=14, max_length=1024)
+    setup_key: str = Field(min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def validate_password_confirmation(self):
+        if not hmac.compare_digest(self.password.encode("utf-8"), self.confirm_password.encode("utf-8")):
+            raise ValueError("Passwords do not match")
+        return self
 
 
 @app.post("/secure/admin/recover")
