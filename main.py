@@ -855,6 +855,51 @@ def register_first_admin(registration: AdminRegistration, request: Request, db: 
     return {"username": admin.username, "role": admin.role, "status": "registered"}
 
 
+
+class AdminRecovery(AdminRegistration):
+    pass
+
+
+@app.post("/secure/admin/recover")
+def recover_admin(
+    recovery: AdminRecovery,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    recovery_key = os.getenv("ADMIN_RECOVERY_KEY", "")
+
+    if not recovery_key or not secrets.compare_digest(
+        recovery.setup_key.encode("utf-8"),
+        recovery_key.encode("utf-8"),
+    ):
+        raise HTTPException(status_code=403, detail="Recovery authorization failed")
+
+    admin = db.query(AdminAccount).filter_by(
+        username=recovery.username,
+        role="admin",
+    ).first()
+
+    if not admin or not admin.is_active:
+        raise HTTPException(status_code=404, detail="Active administrator not found")
+
+    admin.password_hash = password_hasher.hash(recovery.password)
+    admin.failed_login_count = 0
+    admin.locked_until = None
+    db.query(AdminSession).filter_by(admin_id=admin.id).delete()
+    db.commit()
+
+    record_event(
+        db,
+        request=request,
+        event_type="admin_password_recovered",
+        status="Success",
+        label="administrator password recovered",
+        severity="high",
+    )
+
+    return {"status": "success", "message": "Administrator password reset"}
+
+
 @app.post("/secure/admin/login")
 def admin_login(credentials: AdminLogin, request: Request, response: Response, db: Session = Depends(get_db)):
     source_ip = _client_ip(request)
