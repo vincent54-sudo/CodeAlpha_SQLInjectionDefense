@@ -900,6 +900,25 @@ def recover_admin(
     return {"status": "success", "message": "Administrator password reset"}
 
 
+
+@app.get("/secure/admin/identify")
+def identify_admin(
+    x_admin_recovery_key: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    recovery_key = os.getenv("ADMIN_RECOVERY_KEY", "")
+
+    if not recovery_key or not secrets.compare_digest(
+        x_admin_recovery_key.encode("utf-8"),
+        recovery_key.encode("utf-8"),
+    ):
+        raise HTTPException(status_code=403, detail="Recovery authorization failed")
+
+    admins = db.query(AdminAccount).filter_by(role="admin", is_active=True).all()
+
+    return {"administrators": [admin.username for admin in admins]}
+
+
 @app.post("/secure/admin/login")
 def admin_login(credentials: AdminLogin, request: Request, response: Response, db: Session = Depends(get_db)):
     source_ip = _client_ip(request)
